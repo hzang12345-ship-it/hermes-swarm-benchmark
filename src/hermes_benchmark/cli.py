@@ -8,11 +8,16 @@ and a Markdown-first reporting story.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from pathlib import Path
 from typing import Iterable
 
+from .schema import RunManifest
 from .tasks import ALL_AGENT_NAMES, TASKS, goal_for, known_tests
+
+MANIFEST_FILENAME = "manifest.json"
 
 
 def _safe_results_dir(value: str) -> Path:
@@ -98,13 +103,42 @@ def build_omega_goal(
         f"AGENTS: {', '.join(agent_names)}\n"
         f"TESTS: {', '.join(tests)}\n"
         f"ORCHESTRATOR_MODE: {orchestrator}\n"
-        f"RESULT_DIR: {results_dir}\n\n"
+        f"RESULT_DIR: {results_dir}\n"
+        f"MANIFEST: {results_dir}/{MANIFEST_FILENAME}\n\n"
         "Spawn the following sub-agents and poll for their result JSONs:\n\n"
         + "\n\n".join(spawn_blocks)
-        + "\n\nWhen all results exist, run:\n"
+        + "\n\nInvariant: every (test, agent) pair listed above must produce "
+        f"a JSON at {results_dir}/{{test}}/{{agent}}.json. If a sub-agent "
+        "cannot run, write a result with passed=false and an error string "
+        "rather than skipping the file — the report renderer will otherwise "
+        "synthesise an explicit MISSING row from the manifest.\n\n"
+        "When all results exist (or are confirmed missing), run:\n"
         f"    python -m hermes_benchmark.report --results-dir {results_dir} "
         "--out REPORT.md --json report.json\n"
     )
+
+
+def write_manifest(
+    results_dir: Path,
+    agents: list[str],
+    tests: list[str],
+    orchestrator: str,
+    *,
+    model: str | None = None,
+) -> Path:
+    """Write the run manifest the report renderer reads back."""
+    manifest = RunManifest(
+        agents=agents,
+        tests=tests,
+        orchestrator=orchestrator,
+        results_dir=str(results_dir),
+        model=model,
+        created_at=time.time(),
+    )
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / MANIFEST_FILENAME
+    path.write_text(json.dumps(manifest.to_dict(), indent=2))
+    return path
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -145,6 +179,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         default=Path("/tmp/omega_goal.txt"),
         help="Where to write the generated OMEGA goal text.",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Optional model identifier to record in the manifest/report.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     max_agents = get_configured_max_agents()
@@ -171,7 +210,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     args.goal_out.parent.mkdir(parents=True, exist_ok=True)
     args.goal_out.write_text(goal)
+    manifest_path = write_manifest(
+        args.results_dir,
+        selected,
+        args.tests,
+        args.orchestrator,
+        model=args.model,
+    )
     print(f"wrote {args.goal_out} ({len(goal)} bytes)")
+    print(f"wrote {manifest_path}")
     print(
         f"agents={agents} tests={args.tests} "
         f"orchestrator={args.orchestrator} results_dir={args.results_dir}"

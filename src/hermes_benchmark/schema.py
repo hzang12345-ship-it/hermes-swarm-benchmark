@@ -3,6 +3,18 @@
 A single source of truth for the JSON written by sub-agents and consumed by
 the report renderer. Keep this small and stable — anything else lives in
 metadata fields.
+
+Two file formats are part of the contract:
+
+* ``{results_dir}/{test}/{agent}.json`` — written by each sub-agent. Encoded
+  as :class:`AgentResult`.
+* ``{results_dir}/manifest.json`` — written by ``hermes-benchmark`` when the
+  OMEGA goal is generated. Encoded as :class:`RunManifest`. The renderer
+  uses it to (a) populate run-configuration metadata that no individual
+  agent JSON carries (orchestrator topology, model, full agent count), and
+  (b) detect ``(test, agent)`` pairs the user selected but for which no
+  result JSON exists, so the report shows an explicit MISSING row instead
+  of silently dropping the test.
 """
 
 from __future__ import annotations
@@ -113,3 +125,59 @@ class BenchmarkReport:
             "grand_total": self.grand_total,
             "tests": [t.to_dict() for t in self.tests],
         }
+
+
+# Sentinel used in synthesized AgentResult rows for (test, agent) pairs the
+# user selected but which never produced a result JSON. Keep stable — tests
+# and the renderer both check for this exact string.
+MISSING_RESULT_ERROR = "missing result file"
+
+
+@dataclass
+class RunManifest:
+    """Description of the user-selected run, written by the CLI.
+
+    The renderer reads this from ``{results_dir}/manifest.json`` so it can
+    cross-check what was actually produced against what the user asked for,
+    and surface explicit failure rows for missing (test, agent) pairs.
+    """
+
+    agents: list[str] = field(default_factory=list)
+    tests: list[str] = field(default_factory=list)
+    orchestrator: str = "none"
+    results_dir: str = ""
+    model: Optional[str] = None
+    created_at: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RunManifest":
+        return cls(
+            agents=[str(a) for a in d.get("agents", [])],
+            tests=[str(t) for t in d.get("tests", [])],
+            orchestrator=str(d.get("orchestrator", "none")),
+            results_dir=str(d.get("results_dir", "")),
+            model=d.get("model"),
+            created_at=d.get("created_at"),
+        )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def synthesize_missing(test: str, agent: str) -> AgentResult:
+    """Build a placeholder failure row for a (test, agent) pair with no JSON.
+
+    These rows make missing data visible in the Markdown report instead of
+    being silently omitted — the user must always see one row per selected
+    pair.
+    """
+    return AgentResult(
+        agent=agent,
+        test=test,
+        started_at=0.0,
+        completed_at=0.0,
+        wall_s=0.0,
+        passed=False,
+        output="",
+        error=MISSING_RESULT_ERROR,
+    )

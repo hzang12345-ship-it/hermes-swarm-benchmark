@@ -91,6 +91,33 @@ def test_main_writes_goal(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     assert "echo_test" in text
 
 
+def test_main_writes_manifest(tmp_path: Path) -> None:
+    """The CLI must drop a manifest.json in results-dir for the renderer."""
+    import json as _json
+
+    results_dir = tmp_path / "results"
+    rc = cli.main(
+        [
+            "--agents", "3",
+            "--tests", "echo_test,compute_pi",
+            "--orchestrator", "1x4",
+            "--results-dir", str(results_dir),
+            "--goal-out", str(tmp_path / "g.txt"),
+            "--model", "claude-opus-4-7",
+        ]
+    )
+    assert rc == 0
+    manifest_path = results_dir / "manifest.json"
+    assert manifest_path.is_file()
+    parsed = _json.loads(manifest_path.read_text())
+    assert parsed["agents"] == ["ALPHA", "BRAVO", "CHARLIE"]
+    assert parsed["tests"] == ["echo_test", "compute_pi"]
+    assert parsed["orchestrator"] == "1x4"
+    assert parsed["model"] == "claude-opus-4-7"
+    assert parsed["results_dir"] == str(results_dir)
+    assert isinstance(parsed["created_at"], (int, float))
+
+
 def test_main_rejects_unknown_test(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["--tests", "no_such_test", "--goal-out", str(tmp_path / "g.txt")])
@@ -104,3 +131,38 @@ def test_generated_goal_preview_does_not_break_outer_format(tmp_path: Path) -> N
     # the preview that would break the surrounding line structure.
     for line in goal.splitlines():
         assert "\x00" not in line
+
+
+def test_generated_goal_states_missing_invariant() -> None:
+    """OMEGA goal must instruct sub-agents to write JSON even on failure."""
+    goal = cli.build_omega_goal(["ALPHA"], ["echo_test"], "none")
+    assert "MISSING" in goal
+    assert "manifest" in goal.lower()
+
+
+def test_end_to_end_cli_then_report_populates_markdown(tmp_path: Path) -> None:
+    """Running the CLI then the report renderer (with no agent results yet)
+    still produces a fully populated REPORT.md driven by the manifest."""
+    from hermes_benchmark import report as report_mod
+
+    results_dir = tmp_path / "results"
+    cli.main(
+        [
+            "--agents", "2",
+            "--tests", "echo_test,file_io",
+            "--orchestrator", "none",
+            "--results-dir", str(results_dir),
+            "--goal-out", str(tmp_path / "g.txt"),
+        ]
+    )
+    out_md = tmp_path / "REPORT.md"
+    rc = report_mod.main(
+        ["--results-dir", str(results_dir), "--out", str(out_md)]
+    )
+    assert rc == 0
+    md = out_md.read_text()
+    assert "## Test: echo_test" in md
+    assert "## Test: file_io" in md
+    # Every selected (test, agent) pair must show as missing.
+    assert md.count("missing result file") == 4
+    assert "**FAIL**" in md

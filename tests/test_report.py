@@ -233,3 +233,148 @@ def test_main_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
 def test_main_cli_missing_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["--results-dir", str(tmp_path / "nope"), "--out", str(tmp_path / "x.md")])
     assert rc == 2
+
+
+# ── Manifest-driven population ────────────────────────────────────────────
+
+def _write_manifest(
+    tmp_path: Path,
+    *,
+    agents: list[str],
+    tests: list[str],
+    orchestrator: str = "none",
+    model: str | None = None,
+) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "agents": agents,
+                "tests": tests,
+                "orchestrator": orchestrator,
+                "results_dir": str(tmp_path),
+                "model": model,
+                "created_at": 1000.0,
+            }
+        )
+    )
+
+
+def test_manifest_populates_orchestrator_and_model(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path, agents=["ALPHA"], tests=["echo_test"],
+        orchestrator="2x4", model="claude-opus-4-7",
+    )
+    _write(tmp_path, "echo_test", "ALPHA")
+    report = load_results(tmp_path)
+    assert report.orchestrator == "2x4"
+    assert report.model == "claude-opus-4-7"
+    assert report.agent_count == 1
+    md = render_markdown(report, results_dir=tmp_path)
+    assert "| Orchestrator | 2x4 |" in md
+    assert "| Model | claude-opus-4-7 |" in md
+
+
+def test_manifest_synthesises_missing_agent_row(tmp_path: Path) -> None:
+    _write_manifest(tmp_path, agents=["ALPHA", "BRAVO"], tests=["echo_test"])
+    _write(tmp_path, "echo_test", "ALPHA")
+    # BRAVO never produced a JSON.
+    report = load_results(tmp_path)
+    test = report.tests[0]
+    agents = {a.agent: a for a in test.agents}
+    assert agents["BRAVO"].passed is False
+    assert agents["BRAVO"].error == "missing result file"
+    md = render_markdown(report, results_dir=tmp_path)
+    # Missing row should appear in the per-test detail table.
+    assert "| BRAVO " in md
+    assert "missing" in md
+    assert "_(no result file written)_" in md
+    # Failures section should call out the missing row.
+    assert "echo_test / BRAVO" in md
+
+
+def test_manifest_synthesises_missing_test_section(tmp_path: Path) -> None:
+    """A test listed in the manifest with NO results still gets a section."""
+    _write_manifest(tmp_path, agents=["ALPHA"], tests=["echo_test", "compute_pi"])
+    _write(tmp_path, "echo_test", "ALPHA")
+    # compute_pi directory absent entirely.
+    report = load_results(tmp_path)
+    test_names = [t.name for t in report.tests]
+    assert "compute_pi" in test_names
+    md = render_markdown(report, results_dir=tmp_path)
+    assert "## Test: compute_pi" in md
+    assert "compute_pi / ALPHA" in md  # Missing row surfaces in failures.
+
+
+def test_no_manifest_no_results_renders_populated_no_results_report(
+    tmp_path: Path,
+) -> None:
+    """results_dir exists but is empty — populated report, not a stub."""
+    report = load_results(tmp_path)
+    md = render_markdown(report, results_dir=tmp_path)
+    assert "**NO RESULTS**" in md
+    assert "## Run configuration" in md
+    assert "## Environment" in md
+    assert "## Summary" in md
+    # Reproduce block should still be present and non-trivial.
+    assert "hermes-benchmark --agents" in md
+    # No empty placeholders or TBDs leaked through.
+    for forbidden in ("TBD", "...\n", "<placeholder>", " | | "):
+        assert forbidden not in md
+
+
+def test_manifest_with_zero_results_still_lists_every_selected_test(
+    tmp_path: Path,
+) -> None:
+    """Worst case: manifest exists, no agent ever wrote a JSON."""
+    _write_manifest(
+        tmp_path,
+        agents=["ALPHA", "BRAVO"],
+        tests=["echo_test", "file_io", "compute_pi"],
+        orchestrator="1x4",
+    )
+    report = load_results(tmp_path)
+    md = render_markdown(report, results_dir=tmp_path)
+    for test in ("echo_test", "file_io", "compute_pi"):
+        assert f"## Test: {test}" in md
+    # Every (test, agent) pair contributes a missing failure row.
+    assert md.count("missing result file") == 6
+    assert "**FAIL**" in md
+    assert "| Orchestrator | 1x4 |" in md
+
+
+def test_render_markdown_all_known_tests_populated(tmp_path: Path) -> None:
+    """All registered TASKS produce a populated section when present."""
+    from hermes_benchmark.tasks import TASKS
+
+    _write_manifest(tmp_path, agents=["ALPHA"], tests=list(TASKS))
+    for test in TASKS:
+        _write(tmp_path, test, "ALPHA", output=f"{test}-output")
+    report = load_results(tmp_path)
+    md = render_markdown(report, results_dir=tmp_path)
+    for test in TASKS:
+        assert f"## Test: {test}" in md
+        assert f"{test}-output" in md
+    assert "**PASS**" in md
+
+
+def test_invalid_manifest_raises(tmp_path: Path) -> None:
+    (tmp_path / "manifest.json").write_text("{not json")
+    with pytest.raises(ValueError, match="manifest"):
+        load_results(tmp_path)
+
+
+def test_write_report_with_manifest_writes_consistent_json(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path, agents=["ALPHA", "BRAVO"], tests=["echo_test"],
+        orchestrator="1x4",
+    )
+    _write(tmp_path, "echo_test", "ALPHA")
+    out_md = tmp_path / "out" / "REPORT.md"
+    out_json = tmp_path / "out" / "report.json"
+    write_report(tmp_path, out_md, out_json)
+    parsed = json.loads(out_json.read_text())
+    assert parsed["orchestrator"] == "1x4"
+    assert parsed["agent_count"] == 2
+    assert parsed["grand_total"] == 2  # ALPHA real + BRAVO missing
+    assert parsed["grand_passed"] == 1

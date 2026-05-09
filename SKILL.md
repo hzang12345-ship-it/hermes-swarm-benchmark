@@ -22,6 +22,13 @@ a PASS/FAIL banner, run config, environment, per-test detail, failures
 section, and reproduce command. Optional aggregated `report.json` for
 downstream tooling.
 
+**v6.2 changes:** Run manifest. `hermes-benchmark` now writes a
+`manifest.json` alongside the OMEGA goal. The report renderer reads it
+back to populate orchestrator/model metadata and to synthesise an
+explicit "missing result file" row for any selected `(test, agent)` pair
+that never produced a JSON. **`REPORT.md` is now always fully populated —
+no selectable configuration can yield an empty report.**
+
 **v6 changes (2026-05-09):** Result-collection architecture. Sub-agents write
 real timestamps to JSON. OMEGA polls and reads actual completion times — no
 more 0.0s wall times.
@@ -36,6 +43,36 @@ This skill adapts to your plan tier, not the other way around.
 **Style: tight output for end users.** When the benchmark completes, point
 the user at `REPORT.md` and surface the grand-total line. No reasoning
 traces, no tool-call replay, no verbose instruction bullets.
+
+## Hermes Harness Contract
+
+This skill *generates* files; the Hermes harness (or a future native
+Hermes skill/tool) is what actually *executes* the OMEGA orchestrator
+and its sub-agents.
+
+| Step | Runs in | Writes |
+|---|---|---|
+| `hermes-benchmark …` | plain Python (this package) | `omega_goal.txt`, `{results_dir}/manifest.json` |
+| OMEGA orchestrator | Hermes harness (`delegate_task`) | spawns sub-agents per the goal text |
+| Each sub-agent | Hermes harness terminal toolset | `{results_dir}/{test}/{agent}.json` (atomic) |
+| `hermes-benchmark-report …` | plain Python (this package) | `REPORT.md` (+ optional `report.json`) |
+
+### Populated-report invariant
+
+Every `(test, agent)` pair listed in `manifest.json` produces exactly one
+row in `REPORT.md`:
+
+- If the sub-agent wrote a JSON, the row reflects it.
+- If no JSON exists, the row is synthesised with `passed=false`,
+  `error="missing result file"`, and an explicit `missing` marker in the
+  per-test detail table.
+
+**No user-selectable configuration can produce an empty `REPORT.md`.**
+
+If a sub-agent cannot run, it should still write a JSON with `passed=false`
+and a meaningful `error` — that produces a richer failure row than the
+synthesised "missing result file" placeholder. The OMEGA goal text from
+`hermes-benchmark` repeats this invariant explicitly to sub-agents.
 
 ---
 
@@ -313,8 +350,9 @@ result-collection pattern.
 | `--agents` | 1–8 | auto-detected max | Number of agents to spawn |
 | `--tests` | comma-separated | `echo_test,file_io,compute_pi` | Tests to run |
 | `--orchestrator` | `none`, `1x4`, `2x4` | `none` | Orchestrator config |
-| `--results-dir` | path | `/tmp/bench_results` | Where sub-agents write JSON |
+| `--results-dir` | path | `/tmp/bench_results` | Where sub-agents write JSON; also where `manifest.json` lands |
 | `--goal-out` | path | `/tmp/omega_goal.txt` | Where to write the OMEGA goal |
+| `--model` | string | _(none)_ | Optional model id stored in the manifest/report |
 
 For the report renderer:
 

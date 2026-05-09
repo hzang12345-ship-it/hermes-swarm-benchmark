@@ -21,18 +21,48 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .schema import AgentResult, BenchmarkReport, TestResult
+from .schema import (
+    AgentResult,
+    BenchmarkReport,
+    MISSING_RESULT_ERROR,
+    RunManifest,
+    TestResult,
+    synthesize_missing,
+)
+
+MANIFEST_FILENAME = "manifest.json"
+
+
+def _load_manifest(results_dir: Path) -> RunManifest | None:
+    """Read ``results_dir/manifest.json`` if it exists, else None."""
+    path = results_dir / MANIFEST_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        return RunManifest.from_dict(json.loads(path.read_text()))
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(f"invalid manifest in {path}: {exc}") from exc
 
 
 def load_results(results_dir: Path) -> BenchmarkReport:
-    """Load all result JSONs from ``results_dir/{test}/{agent}.json``."""
+    """Load all result JSONs from ``results_dir/{test}/{agent}.json``.
+
+    If a ``manifest.json`` is present, it is used to (a) populate
+    orchestrator/model/agent_count metadata in the report, and (b)
+    synthesise explicit failure rows for any (test, agent) pair the user
+    selected but for which no result JSON exists. This keeps the rendered
+    Markdown report fully populated for every selected configuration.
+    """
 
     if not results_dir.exists():
         raise FileNotFoundError(f"results_dir does not exist: {results_dir}")
     if not results_dir.is_dir():
         raise NotADirectoryError(f"results_dir is not a directory: {results_dir}")
 
-    tests: list[TestResult] = []
+    manifest = _load_manifest(results_dir)
+
+    # Discover tests from disk: any subdirectory containing JSON files.
+    found: dict[str, list[AgentResult]] = {}
     for test_dir in sorted(p for p in results_dir.iterdir() if p.is_dir()):
         agents: list[AgentResult] = []
         for agent_file in sorted(test_dir.glob("*.json")):
@@ -42,10 +72,46 @@ def load_results(results_dir: Path) -> BenchmarkReport:
                 raise ValueError(f"invalid JSON in {agent_file}: {exc}") from exc
             agents.append(AgentResult.from_dict(data))
         if agents:
-            tests.append(TestResult(name=test_dir.name, agents=agents))
+            found[test_dir.name] = agents
 
-    agent_count = max((t.total for t in tests), default=0)
-    return BenchmarkReport(tests=tests, agent_count=agent_count)
+    # Union of disk-discovered tests and manifest-declared tests, sorted to
+    # keep report ordering stable.
+    test_names: list[str] = sorted(
+        set(found) | (set(manifest.tests) if manifest else set())
+    )
+
+    tests: list[TestResult] = []
+    for test_name in test_names:
+        present = found.get(test_name, [])
+        present_agents = {a.agent for a in present}
+        expected_agents = list(manifest.agents) if manifest else []
+        synthesised = [
+            synthesize_missing(test_name, agent)
+            for agent in expected_agents
+            if agent not in present_agents
+        ]
+        merged = sorted(present + synthesised, key=lambda a: a.agent)
+        # Always include a TestResult for each manifest-declared test, even
+        # if no agents were expected — the user must see one row per
+        # selected test in the report.
+        if merged or test_name in (manifest.tests if manifest else []):
+            tests.append(TestResult(name=test_name, agents=merged))
+
+    if manifest is not None:
+        agent_count = len(manifest.agents)
+        orchestrator = manifest.orchestrator
+        model = manifest.model
+    else:
+        agent_count = max((t.total for t in tests), default=0)
+        orchestrator = "none"
+        model = None
+
+    return BenchmarkReport(
+        tests=tests,
+        agent_count=agent_count,
+        orchestrator=orchestrator,
+        model=model,
+    )
 
 
 def _environment_block() -> dict[str, str]:
@@ -76,7 +142,12 @@ def render_markdown(
         if report.grand_total
         else 0.0
     )
-    status = "PASS" if report.grand_passed == report.grand_total and report.grand_total else "FAIL"
+    if report.grand_total == 0:
+        status = "NO RESULTS"
+    elif report.grand_passed == report.grand_total:
+        status = "PASS"
+    else:
+        status = "FAIL"
     lines.append(
         f"**{status}** — {report.grand_passed}/{report.grand_total} agents passed "
         f"({pct:.1f}%) in {report.grand_wall_s:.3f}s wall time."
@@ -109,12 +180,15 @@ def render_markdown(
     lines.append("")
     lines.append("| Test | Pass | Total | Wall (s) | Throughput (pass/s) | Status |")
     lines.append("|---|---:|---:|---:|---:|:-:|")
-    for t in report.tests:
-        mark = "✓" if t.passed == t.total else "✗"
-        lines.append(
-            f"| {t.name} | {t.passed} | {t.total} | "
-            f"{t.wall_s:.3f} | {t.throughput:.3f} | {mark} |"
-        )
+    if report.tests:
+        for t in report.tests:
+            mark = "✓" if t.total and t.passed == t.total else "✗"
+            lines.append(
+                f"| {t.name} | {t.passed} | {t.total} | "
+                f"{t.wall_s:.3f} | {t.throughput:.3f} | {mark} |"
+            )
+    else:
+        lines.append("| _no tests_ | 0 | 0 | 0.000 | 0.000 | — |")
     lines.append(
         f"| **Total** | **{report.grand_passed}** | **{report.grand_total}** | "
         f"**{report.grand_wall_s:.3f}** | — | "
@@ -123,6 +197,15 @@ def render_markdown(
     lines.append("")
 
     # ── Per-test detail ────────────────────────────────────────────────
+    if not report.tests:
+        lines.append("## Test results")
+        lines.append("")
+        lines.append(
+            "_No result JSONs were found and no manifest declared any "
+            "expected tests. Run `hermes-benchmark` first to write a "
+            "manifest, then have the OMEGA orchestrator execute the goal._"
+        )
+        lines.append("")
     for t in report.tests:
         lines.append(f"## Test: {t.name}")
         lines.append("")
@@ -134,8 +217,13 @@ def render_markdown(
         lines.append("| Agent | Started | Completed | Wall (s) | Passed | Output |")
         lines.append("|---|---:|---:|---:|:-:|---|")
         for a in t.agents:
-            mark = "✓" if a.passed else "✗"
+            if a.error == MISSING_RESULT_ERROR:
+                mark = "missing"
+            else:
+                mark = "✓" if a.passed else "✗"
             output_cell = (a.output or "").replace("|", "\\|").replace("\n", " ⏎ ")
+            if not output_cell and a.error == MISSING_RESULT_ERROR:
+                output_cell = "_(no result file written)_"
             if len(output_cell) > 80:
                 output_cell = output_cell[:77] + "..."
             lines.append(
@@ -153,7 +241,9 @@ def render_markdown(
 
     lines.append("## Failures")
     lines.append("")
-    if not failures:
+    if not failures and report.grand_total == 0:
+        lines.append("_No agent results were collected — see above._")
+    elif not failures:
         lines.append("_None — all agents passed._")
     else:
         lines.append(f"{len(failures)} agent run(s) failed:")
@@ -179,9 +269,10 @@ def render_markdown(
     lines.append("## Reproduce")
     lines.append("")
     test_arg = ",".join(t.name for t in report.tests) or "echo_test"
+    repro_agents = report.agent_count if report.agent_count > 0 else 1
     lines.append("```bash")
     lines.append(
-        f"hermes-benchmark --agents {report.agent_count} "
+        f"hermes-benchmark --agents {repro_agents} "
         f"--tests {test_arg} --orchestrator {report.orchestrator}"
     )
     if results_dir is not None:
