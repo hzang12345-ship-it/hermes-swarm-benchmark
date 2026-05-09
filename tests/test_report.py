@@ -80,14 +80,115 @@ def test_load_results_invalid_json(tmp_path: Path) -> None:
         load_results(tmp_path)
 
 
-def test_render_markdown_contains_table(tmp_path: Path) -> None:
+def test_render_markdown_contains_summary_table(tmp_path: Path) -> None:
     _write(tmp_path, "echo_test", "ALPHA")
     _write(tmp_path, "echo_test", "BRAVO", passed=False, error="boom")
-    md = render_markdown(load_results(tmp_path))
+    md = render_markdown(load_results(tmp_path), results_dir=tmp_path)
     assert "# Hermes Swarm Benchmark — Report" in md
-    assert "| Test | Pass | Total | Wall (s) | Throughput (pass/s) |" in md
+    assert "## Summary" in md
+    assert (
+        "| Test | Pass | Total | Wall (s) | Throughput (pass/s) | Status |"
+        in md
+    )
     assert "ALPHA" in md and "BRAVO" in md
+
+
+def test_render_markdown_includes_environment_and_run_config(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    md = render_markdown(load_results(tmp_path), results_dir=tmp_path)
+    assert "## Run configuration" in md
+    assert "## Environment" in md
+    # Environment table includes a Python version row.
+    assert "| Python |" in md
+
+
+def test_render_markdown_per_test_detail_section(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    _write(tmp_path, "compute_pi", "BRAVO", wall_s=2.0)
+    md = render_markdown(load_results(tmp_path), results_dir=tmp_path)
+    assert "## Test: echo_test" in md
+    assert "## Test: compute_pi" in md
+    # Per-test detail table column header.
+    assert (
+        "| Agent | Started | Completed | Wall (s) | Passed | Output |" in md
+    )
+
+
+def test_render_markdown_failures_section_lists_each_failure(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    _write(
+        tmp_path,
+        "echo_test",
+        "BRAVO",
+        passed=False,
+        error="boom\nstack-trace",
+        output="last-bytes",
+    )
+    md = render_markdown(load_results(tmp_path), results_dir=tmp_path)
+    assert "## Failures" in md
+    assert "echo_test / BRAVO" in md
     assert "boom" in md
+    assert "last-bytes" in md
+    # Passing agent should NOT show up under Failures.
+    assert "echo_test / ALPHA" not in md
+
+
+def test_render_markdown_failures_section_says_none_when_clean(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    md = render_markdown(load_results(tmp_path), results_dir=tmp_path)
+    assert "## Failures" in md
+    assert "_None — all agents passed._" in md
+
+
+def test_render_markdown_reproduce_block_uses_real_test_names(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    _write(tmp_path, "compute_pi", "ALPHA")
+    md = render_markdown(load_results(tmp_path), results_dir=tmp_path)
+    assert "## Reproduce" in md
+    assert "hermes-benchmark --agents" in md
+    # Tests are loaded in directory-sorted order, so compute_pi precedes echo_test.
+    assert "compute_pi,echo_test" in md
+    assert "hermes-benchmark-report" in md
+
+
+def test_render_markdown_raw_data_pointers(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    md = render_markdown(
+        load_results(tmp_path),
+        results_dir=tmp_path,
+        json_path=tmp_path / "report.json",
+    )
+    assert "## Raw data" in md
+    assert "{test}/{agent}.json" in md
+    assert "report.json" in md
+
+
+def test_render_markdown_status_banner_reflects_outcome(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    md_pass = render_markdown(load_results(tmp_path))
+    assert "**PASS**" in md_pass
+
+    _write(tmp_path, "echo_test", "BRAVO", passed=False, error="x")
+    md_fail = render_markdown(load_results(tmp_path))
+    assert "**FAIL**" in md_fail
+
+
+def test_render_markdown_pipe_in_output_is_escaped(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA", output="a|b|c")
+    md = render_markdown(load_results(tmp_path))
+    # The literal pipe inside output must be escaped so it doesn't break
+    # the surrounding Markdown table column boundaries.
+    assert "a\\|b\\|c" in md
 
 
 def test_write_report_creates_files(tmp_path: Path) -> None:
@@ -100,6 +201,23 @@ def test_write_report_creates_files(tmp_path: Path) -> None:
     parsed = json.loads(out_json.read_text())
     assert parsed["grand_passed"] == 1
     assert parsed["tests"][0]["name"] == "echo_test"
+
+
+def test_write_report_markdown_only_when_no_json(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    out_md = tmp_path / "REPORT.md"
+    write_report(tmp_path, out_md)
+    assert out_md.is_file()
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_write_report_does_not_create_png(tmp_path: Path) -> None:
+    """Regression: PNG output must never be produced."""
+    _write(tmp_path, "echo_test", "ALPHA")
+    out_md = tmp_path / "out" / "REPORT.md"
+    write_report(tmp_path, out_md, tmp_path / "out" / "report.json")
+    pngs = list((tmp_path / "out").glob("*.png"))
+    assert pngs == []
 
 
 def test_main_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

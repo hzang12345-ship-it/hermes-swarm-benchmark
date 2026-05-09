@@ -31,5 +31,10 @@ REPORT.md
 report.json
 /tmp/bench_results/
 
+# Generated chart/image outputs (PNG output is no longer produced; this
+# rule prevents stale local PNGs from leaking back into the repo).
+*.png
+benchmark_*.png
+
 # OS
 .DS_Store
