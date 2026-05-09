@@ -10,7 +10,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "hzang12345-ship-it" }]
-keywords = ["hermes", "benchmark", "agents", "swarm"]
+keywords = [
+    "hermes",
+    "hermes-skill",
+    "agent-benchmark",
+    "swarm-benchmark",
+    "ai-harness",
+    "benchmark",
+    "concurrent-agents",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",

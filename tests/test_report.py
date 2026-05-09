@@ -343,6 +343,37 @@ def test_manifest_with_zero_results_still_lists_every_selected_test(
     assert "| Orchestrator | 1x4 |" in md
 
 
+def test_no_results_report_never_fabricates_pass_rows(tmp_path: Path) -> None:
+    """Contract: when no agent JSONs exist, the renderer must not invent a
+    PASS banner, a non-zero ``grand_passed`` count, or a green checkmark
+    in any per-test summary row. This pins the "no simulated returns"
+    invariant called out in README and SKILL.md.
+    """
+    _write_manifest(
+        tmp_path,
+        agents=["ALPHA", "BRAVO"],
+        tests=["echo_test", "compute_pi"],
+        orchestrator="none",
+    )
+    report = load_results(tmp_path)
+    md = render_markdown(report, results_dir=tmp_path)
+
+    # Banner must be FAIL (manifest has expected pairs → grand_total > 0).
+    assert "**FAIL**" in md
+    assert "**PASS**" not in md
+    # Aggregate counts in the summary line must read 0/N, not N/N.
+    assert "0/4 agents passed" in md
+    # No per-test row may carry a PASS checkmark.
+    summary_section = md.split("## Summary", 1)[1].split("##", 1)[0]
+    for line in summary_section.splitlines():
+        if line.startswith("| echo_test ") or line.startswith("| compute_pi "):
+            assert "✗" in line, line
+            assert "✓" not in line, line
+    # JSON snapshot is honest too: zero passes recorded.
+    assert report.grand_passed == 0
+    assert report.grand_total == 4
+
+
 def test_render_markdown_all_known_tests_populated(tmp_path: Path) -> None:
     """All registered TASKS produce a populated section when present."""
     from hermes_benchmark.tasks import TASKS

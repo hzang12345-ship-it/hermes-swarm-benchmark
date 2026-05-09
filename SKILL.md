@@ -1,8 +1,10 @@
 ---
 name: hermes-swarm-benchmark
-description: "Run a configurable concurrent agent benchmark suite for Hermes Agent — auto-detects max agents, lets user pick count (2-8), optional multi-orchestrator stress test. Results emitted as a polished Markdown report."
-version: 6.1.0
-author: hessumz
+description: "Run a configurable concurrent agent benchmark suite for Hermes Agent — auto-detects max agents, lets the user pick count (2–8), optional multi-orchestrator stress test. Results emitted as a polished Markdown report. The renderer never fabricates pass rows: missing results render as explicit `missing` failures."
+version: 6.2.0
+author: hzang12345-ship-it
+license: MIT
+homepage: https://github.com/hzang12345-ship-it/hermes-swarm-benchmark
 platforms: [macos, linux]
 metadata:
   hermes:
@@ -10,73 +12,86 @@ metadata:
     category: software-development
 ---
 
-# Hermes Swarm Benchmark v6
+# Hermes Swarm Benchmark
 
 Interactive, user-configurable concurrent agent benchmark. Auto-detects your
-configured `max_concurrent_children`, lets you choose how many agents to test,
-and includes an optional multi-orchestrator stress test.
+configured `max_concurrent_children`, lets the user choose how many agents to
+test, and includes an optional multi-orchestrator stress test.
 
-**v6.1 changes:** PNG chart output removed. The benchmark now produces a
-single first-class artifact, **`REPORT.md`** — a polished Markdown report with
-a PASS/FAIL banner, run config, environment, per-test detail, failures
-section, and reproduce command. Optional aggregated `report.json` for
-downstream tooling.
+## Discovery / install
 
-**v6.2 changes:** Run manifest. `hermes-benchmark` now writes a
-`manifest.json` alongside the OMEGA goal. The report renderer reads it
-back to populate orchestrator/model metadata and to synthesise an
-explicit "missing result file" row for any selected `(test, agent)` pair
-that never produced a JSON. **`REPORT.md` is now always fully populated —
-no selectable configuration can yield an empty report.**
+This skill lives at the root of the public repository
+[hermes-swarm-benchmark](https://github.com/hzang12345-ship-it/hermes-swarm-benchmark).
 
-**v6 changes (2026-05-09):** Result-collection architecture. Sub-agents write
-real timestamps to JSON. OMEGA polls and reads actual completion times — no
-more 0.0s wall times.
+**Install into a Hermes harness (recommended):**
 
-## The Core Idea
+```bash
+git clone https://github.com/hzang12345-ship-it/hermes-swarm-benchmark.git
+cd hermes-swarm-benchmark
+./scripts/install_skill.sh --apply        # default dest: ~/.hermes/skills/software-development/hermes-swarm-benchmark
+pip install -e .                          # so the skill can call hermes-benchmark / hermes-benchmark-report
+```
 
-**"I just want to test 2 agents"** — valid.
-**"I want to stress test 2 orchestrators each spawning 4 subs"** — also valid.
+The install script is a copy-only operation with `--dry-run` by default; it
+never edits `~/.hermes/config.yaml` or any other user config.
 
-This skill adapts to your plan tier, not the other way around.
-
-**Style: tight output for end users.** When the benchmark completes, point
-the user at `REPORT.md` and surface the grand-total line. No reasoning
-traces, no tool-call replay, no verbose instruction bullets.
+If your harness expects skills under a different path, pass `--dest <path>`
+or copy `SKILL.md` and `src/` manually. Hermes loads the skill from
+whichever directory it ends up in — the SKILL.md file at the repo root is
+the canonical, installable artifact.
 
 ## Hermes Harness Contract
 
-This skill *generates* files; the Hermes harness (or a future native
-Hermes skill/tool) is what actually *executes* the OMEGA orchestrator
-and its sub-agents.
+This skill *generates* files; the Hermes harness is what actually
+*executes* the OMEGA orchestrator and its sub-agents.
 
 | Step | Runs in | Writes |
 |---|---|---|
-| `hermes-benchmark …` | plain Python (this package) | `omega_goal.txt`, `{results_dir}/manifest.json` |
+| `hermes-benchmark …` | plain Python (this package) | `omega_goal.txt`, `<results-dir>/manifest.json` |
 | OMEGA orchestrator | Hermes harness (`delegate_task`) | spawns sub-agents per the goal text |
-| Each sub-agent | Hermes harness terminal toolset | `{results_dir}/{test}/{agent}.json` (atomic) |
+| Each sub-agent | Hermes harness terminal toolset | `<results-dir>/{test}/{agent}.json` (atomic) |
 | `hermes-benchmark-report …` | plain Python (this package) | `REPORT.md` (+ optional `report.json`) |
 
-### Populated-report invariant
+### Report contract — no fabricated rows
 
-Every `(test, agent)` pair listed in `manifest.json` produces exactly one
-row in `REPORT.md`:
+The renderer **never invents pass/success rows**. Every `(test, agent)`
+pair listed in `manifest.json` produces exactly one row in `REPORT.md`:
 
-- If the sub-agent wrote a JSON, the row reflects it.
-- If no JSON exists, the row is synthesised with `passed=false`,
-  `error="missing result file"`, and an explicit `missing` marker in the
+- If the sub-agent wrote a JSON, the row reflects it verbatim.
+- If no JSON exists, the row is rendered as `passed=false`,
+  `error="missing result file"`, with a literal `missing` marker in the
   per-test detail table.
 
-**No user-selectable configuration can produce an empty `REPORT.md`.**
+Concretely:
 
-If a sub-agent cannot run, it should still write a JSON with `passed=false`
+- A `REPORT.md` rendered before any agent runs is a **fully populated
+  failure report** — every row reads `missing`. It is *not* an empty
+  stub, and it is *not* a fake success.
+- Pass rows only ever appear when a real sub-agent wrote `passed: true`.
+
+Sub-agents that cannot run should still write a JSON with `passed=false`
 and a meaningful `error` — that produces a richer failure row than the
-synthesised "missing result file" placeholder. The OMEGA goal text from
+synthesised `missing result file` placeholder. The OMEGA goal text from
 `hermes-benchmark` repeats this invariant explicitly to sub-agents.
+
+## End-user output
+
+When the orchestrator finishes, surface the grand-total line and the
+report path. No reasoning traces, no tool-call replay, no verbose
+"Important:" instruction bullets.
+
+```
+Hermes Swarm Benchmark — N/M passed in T.Ts
+  Report: REPORT.md
+```
+
+`REPORT.md` is the canonical artifact — open it in any Markdown viewer or
+let GitHub render it. **No PNG output is produced.** If a chart is
+needed, plot from `report.json` with a separate tool.
 
 ---
 
-## Step 0: Auto-Detect Config
+## Step 0: Auto-detect config
 
 Before the skill says anything to the user, silently check the current
 `max_concurrent_children` from config:
@@ -86,10 +101,12 @@ DETECTED=$(grep max_concurrent_children ~/.hermes/config.yaml | awk '{print $2}'
 ```
 
 - Default Hermes: `3`
-- After our fix: `8`
+- After the operator's fix: `8`
 - User might have set anything between 2–8
 
-## Step 1: Pick Agent Count and Tests
+The Python CLI does the same lookup automatically (`get_configured_max_agents`).
+
+## Step 1: Pick agent count and tests
 
 Offer the user a quick interactive prompt:
 
@@ -99,11 +116,9 @@ Offer the user a quick interactive prompt:
 
 If user says `n`, let them adjust any choice. If `y`, proceed to Step 2.
 
----
+## Step 2: Config mismatch warning
 
-## Step 2: Config Mismatch Warning
-
-If user picked an agent count that exceeds currently configured
+If the user picked an agent count that exceeds currently configured
 `max_concurrent_children`:
 
 ```
@@ -116,91 +131,89 @@ Options:
   3) Keep config but cap at {USER_CHOICE} (will fail if {CURRENT} < {USER_CHOICE})
 ```
 
-To update config automatically:
+This skill does **not** edit `~/.hermes/config.yaml` automatically. If the
+user picks option 1, surface the explicit commands and let them run them:
 
 ```bash
+# macOS:
 sed -i '' "s/^  max_concurrent_children: [0-9]*/  max_concurrent_children: {USER_CHOICE}/" ~/.hermes/config.yaml
 launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist
-launchctl load ~/Library/LaunchAgents/ai.hermes.gateway.plist
-echo "Gateway restarted with max_concurrent_children: {USER_CHOICE}"
+launchctl load   ~/Library/LaunchAgents/ai.hermes.gateway.plist
 ```
 
----
+## Step 3: Run
 
-## Step 3: Run Fully Autonomous
+Once the config is valid and the user confirms, generate the OMEGA goal:
 
-Once config is valid and the user confirms, spawn the OMEGA orchestrator
-agent. The orchestrator handles everything autonomously — no further user
-input needed until results are ready.
+```bash
+hermes-benchmark --agents {USER_CHOICE} \
+    --tests echo_test,file_io,compute_pi \
+    --orchestrator none \
+    --goal-out /tmp/omega_goal.txt \
+    --results-dir /tmp/bench_results
+```
+
+This writes:
+
+- `/tmp/omega_goal.txt` — the OMEGA goal text.
+- `/tmp/bench_results/manifest.json` — selected agents/tests/orchestrator.
+
+Then have OMEGA execute the goal text via `delegate_task`. Sub-agents
+will write `/tmp/bench_results/{test}/{agent}.json` (atomic writes, 60s
+timeout per workload).
 
 Agent naming by count:
 
 | Count | Names used |
 |-------|-----------|
 | 2 | ALPHA, BRAVO |
-| 3 | ALPHA, BRAVO, CHARLIE |
-| 4 | ALPHA, BRAVO, CHARLIE, DELTA |
+| 3 | ALPHA..CHARLIE |
+| 4 | ALPHA..DELTA |
 | 5 | ALPHA..ECHO |
 | 6 | ALPHA..FOXTROT |
 | 7 | ALPHA..GOLF |
 | 8 | ALPHA..HOTEL |
 
-The OMEGA orchestrator goal:
-
-- Spawns all agent waves in parallel via `delegate_task`.
-- Sub-agents write `/tmp/bench_results/{test}/{agent}.json` (atomic writes,
-  60s timeout per workload).
-- OMEGA polls until all files exist, then runs the report renderer.
-
 ### Render the report
 
 ```bash
-python -m hermes_benchmark.report \
+hermes-benchmark-report \
     --results-dir /tmp/bench_results \
     --out REPORT.md \
     --json report.json
 ```
 
-Default and only first-class output: **`REPORT.md`** — a polished Markdown
-document with:
+Or invoke as a module if the script is not on `$PATH`:
 
-- PASS/FAIL banner and grand-total wall time.
+```bash
+python -m hermes_benchmark.report \
+    --results-dir /tmp/bench_results \
+    --out REPORT.md --json report.json
+```
+
+`REPORT.md` is the primary artifact:
+
+- PASS / FAIL / NO RESULTS banner and grand-total wall time.
 - Run configuration (agent count, orchestrator, model, test count).
 - Environment (Python version, platform, generation timestamp).
 - Summary table per test (pass/total/wall/throughput) with a totals row.
 - Per-test detail tables with started/completed timestamps per agent.
-- Failures section with error message and last output (or "None" when all
-  passed).
+- Failures section with error message and last output (or "None" when
+  every real agent passed).
 - Reproduce block with the exact CLI commands.
 - Raw data pointers to the per-agent JSON files and aggregated `report.json`.
 
-`report.json` is optional, written only when `--json` is supplied — useful
-for downstream tooling but not required for human review.
+`report.json` is optional, written only when `--json` is supplied —
+useful for downstream tooling but not required for human review.
 
-Sub-agent names for orchestrator test:
+Sub-agent names for orchestrator stress tests:
 
 - Orchestrator 1 spawns: ALPHA, BRAVO, CHARLIE, DELTA
 - Orchestrator 2 spawns: ECHO, FOXTROT, GOLF, HOTEL
 
 ---
 
-## Run Tests
-
-### Standard Parallel Test
-
-```python
-delegate_task(
-    goal="You are {AGENT_NAME}. Your task: {TASK}.
-    Report: {AGENT_NAME} | wall_time | tokens_in | tokens_out | api_calls | PASS/FAIL",
-    tasks=[
-        {"goal": "{NAME}: {TASK}", "toolsets": ["terminal"]}
-        for NAME in selected_names
-    ],
-    toolsets=["terminal", "file", "web", "delegation"],
-)
-```
-
-### Tests Available
+## Available tests
 
 | Test | Toolset | Task | Notes |
 |------|---------|------|-------|
@@ -208,16 +221,19 @@ delegate_task(
 | `file_io` | terminal | write/verify `/tmp/bench/[AGENT].txt` | tests filesystem |
 | `compute_pi` | terminal | Leibniz series, 5M iterations | CPU-bound, deterministic |
 | `terminal_cmd` | terminal | alias for echo_test | back-compat |
-| `browser` | browser | placeholder | no-op currently |
+| `browser` | browser | not implemented; runs `echo 'browser_skipped'` so the row is honest, not fabricated |
 
-### echo_test Task (recommended implementation)
+### Recommended echo_test sub-agent body
+
+The Python package generates this for you (see
+`hermes_benchmark.tasks.make_goal`). For reference, a hand-written
+equivalent:
 
 ```python
 import time, json, os
-name = 'ALPHA'  # or BRAVO, CHARLIE, DELTA
+name = 'ALPHA'    # or BRAVO, CHARLIE, ...
 test = 'echo_test'
 start = time.time()
-# Use Python time — avoids shell quoting issues with $() in subprocess.
 output = f"{name}:{int(time.time())}"
 wall = time.time() - start
 result = dict(agent=name, test=test, started_at=start, completed_at=time.time(),
@@ -228,122 +244,50 @@ with open(f'/tmp/bench_results/{test}/{name}.json', 'w') as f:
 print(f"{name}|{output}|wall={wall:.3f}s")
 ```
 
-> **⚠️ DO NOT use** `subprocess.check_output("echo 'AGENTNAME:$(date +%s)'", shell=True)` —
+> ⚠️ **Do not** use
+> `subprocess.check_output("echo 'AGENTNAME:$(date +%s)'", shell=True)` —
 > single quotes prevent `$()` expansion. Use Python `time.time()` instead.
 
-## Orchestrator Test
+### Orchestrator stress test pattern
 
 ```python
 delegate_task(
-    goal="""You are OMEGA-1. Your job: spawn 4 named sub-agents (ALPHA, BRAVO, CHARLIE, DELTA).
-    Each sub-agent runs: python3 -c "import time; print('SUB_AGENT done')"
+    goal="""You are OMEGA-1. Spawn 4 named sub-agents (ALPHA, BRAVO, CHARLIE, DELTA).
+    Each sub-agent runs: python3 -c "import time; print('SUB_AGENT done')".
     Wait for all 4 to complete, then report:
     OMEGA-1 | wall_time | spawned: 4 | completed: N | failed: Z""",
     toolsets=["delegation", "terminal"],
 )
-# Run N times for N orchestrators
 ```
 
 > **Pitfall:** When building orchestrator sub-agent goals, each name must
 > be expanded inline — never pass a literal `{name}` placeholder to
-> sub-agents. The correct pattern iterates the sub-agent list and uses
-> `.format(n, n)` or `.replace()` per agent:
+> sub-agents:
 >
 > ```python
-> sub_lines = "\n".join("  - {}: python3 -c \"print('{} done')\"".format(n, n) for n in subs)
+> sub_lines = "\n".join(
+>     "  - {}: python3 -c \"print('{} done')\"".format(n, n) for n in subs
+> )
 > ```
 >
 > A literal `{name}` will reach sub-agents unexpanded, breaking the test.
 
-> **Pitfall (2026-05-09):** Orchestrator sub-agents using
+> **Pitfall:** Orchestrator sub-agents using
 > `tee /tmp/bench_results/orchestrator/{name}.json` may write plain text
-> instead of structured JSON. Use Python to write the JSON explicitly:
+> instead of structured JSON. Use Python to write JSON explicitly:
 >
 > ```python
 > with open(f"/tmp/bench_results/orchestrator/{name}.json", "w") as f:
 >     json.dump(dict(agent=name, test="orchestrator", passed=True, output="done"), f)
 > ```
 >
-> Never rely on `tee` for structured JSON output in benchmark result collection.
+> Never rely on `tee` for structured JSON in benchmark result collection.
 
 ---
 
-## Output Format
+## CLI reference
 
-The orchestrator surfaces only the grand-total line and the path to
-`REPORT.md`:
-
-```
-✓ Hermes Swarm Benchmark — 16/16 passed (100%) in 12.3s
-  Report: REPORT.md
-```
-
-`REPORT.md` is the canonical artifact — open it in any Markdown viewer or
-let GitHub render it. **No PNG output is produced.** If you need a chart,
-plot from `report.json` with a separate tool — that's a deliberate
-boundary.
-
-**End-user output only** — show the final summary line plus the report
-path. No internal reasoning traces, no tool-call replay, no verbose bullet
-lists of "Important:" instructions. Keep it tight.
-
----
-
-## E2E Automation — Result-Collection Architecture (Implemented)
-
-The `hermes-benchmark` CLI generates a real OMEGA goal with the
-result-collection pattern.
-
-**Why result collection works:**
-
-- `delegate_task` is non-blocking — it fires and returns immediately.
-- The agent's wall time is spawn time, not completion time → always ~0ms.
-- Fix: sub-agents write `started_at`/`completed_at` to
-  `/tmp/bench_results/{test}/{agent}.json`.
-- OMEGA polls until all files exist, reads timestamps, computes
-  `total_wall = max(completed_at) - min(started_at)`.
-
-**Why `execute_code` can't call `delegate_task`:**
-
-- `delegate_task` is an **AIAgent METHOD** on the live agent object.
-- It's NOT a standalone Python function — cannot be imported from a subprocess.
-- ACP adapter uses JSON-RPC over stdio — designed for interactive clients.
-- `max_spawn_depth: 1` enforced — orchestrator → sub-agent only, no
-  grandchild spawning.
-
-**The correct E2E pattern is the 2-step agent workflow:**
-
-1. `hermes-benchmark --agents 4 --tests echo_test,compute_pi`
-2. Tell this agent: "Run 4-agent benchmark with tests: echo_test, compute_pi"
-
-### compute_pi Escaping — Critical Bug
-
-> **BUG:** f-string `{}` braces conflict with Python's `.format()` template substitution.
-> `python3 -c "print(f'{name}|{time:.3f}')"` — the `{time:.3f}` is evaluated
-> by Python at string construction time, NOT passed through to the shell.
->
-> **FIX:** Use `%%` for shell modulo operator, and `.replace("NAME", "{name}")`
-> for name substitution instead of `.format()`.
-
-### echo_test Subprocess Quoting — Shell Expansion Fails in Single Quotes
-
-> **BUG (found in benchmark Run 9):**
-> `subprocess.check_output("echo 'AGENTNAME:$(date +%s)'", shell=True)` — single
-> quotes around `$(date +%s)` prevent shell `$()` expansion. Subprocess
-> receives literal string `AGENTNAME:$(date +%s)` instead of a timestamp.
->
-> **RECOMMENDED FIX:** Use Python's `time.time()` directly.
-
-### OMEGA Sub-Agent Goal Truncation — Critical Bug
-
-> **BUG:** When OMEGA passes a goal to a sub-agent via `delegate_task`,
-> the goal string can get truncated at ~500 tokens. The compute_pi
-> 5M-iteration inline script was being cut off.
->
-> **FIX:** For CPU-bound compute tasks, prefer a temp-file approach — have
-> OMEGA write the script to `/tmp/pi_{name}.py` first, then run it.
-
-### Flags
+`hermes-benchmark`:
 
 | Flag | Values | Default | Description |
 |------|--------|---------|-------------|
@@ -352,9 +296,9 @@ result-collection pattern.
 | `--orchestrator` | `none`, `1x4`, `2x4` | `none` | Orchestrator config |
 | `--results-dir` | path | `/tmp/bench_results` | Where sub-agents write JSON; also where `manifest.json` lands |
 | `--goal-out` | path | `/tmp/omega_goal.txt` | Where to write the OMEGA goal |
-| `--model` | string | _(none)_ | Optional model id stored in the manifest/report |
+| `--model` | string | _(none)_ | Optional model id stored in manifest/report |
 
-For the report renderer:
+`hermes-benchmark-report`:
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -362,22 +306,13 @@ For the report renderer:
 | `--out` | `REPORT.md` | Markdown report output (primary artifact) |
 | `--json` | _(none)_ | Optional aggregated JSON output |
 
-### Available Tests
-
-- `echo_test` — codename + timestamp (fast, always works)
-- `file_io` — write/verify `/tmp/bench/[AGENT].txt`
-- `compute_pi` — Leibniz 5M iterations (CPU-bound, deterministic) — ⚠️ use
-  temp-file approach to avoid goal truncation
-- `terminal_cmd` — alias for echo_test
-- `browser` — placeholder, currently a no-op
-
-### Orchestrator Options
+### Orchestrator options
 
 - `none` — skip orchestrator test
 - `1x4` — 1 orchestrator spawning 4 sub-agents
 - `2x4` — 2 orchestrators each spawning 4 sub-agents (stress test)
 
-### Example Runs
+### Example runs
 
 ```bash
 # Minimal: 2 agents, echo only
@@ -393,7 +328,7 @@ hermes-benchmark --agents 8 --tests echo_test,file_io,compute_pi,browser --orche
 hermes-benchmark --agents 8 --tests echo_test,file_io,compute_pi --orchestrator 2x4
 ```
 
-### Exit Codes
+### Exit codes
 
 - `0` — all tests passed
 - `1` — one or more tests failed
@@ -401,82 +336,33 @@ hermes-benchmark --agents 8 --tests echo_test,file_io,compute_pi --orchestrator 
 
 ---
 
-## Key Changes v3
-
-1. **Auto-detect** max_concurrent_children from config at runtime.
-2. **Interactive** — user picks agent count (2–8) and test suite.
-3. **Dynamic agent names** — adapts to count, no hardcoded 8.
-4. **Config mismatch warning** — offers to update and restart.
-5. **Multi-orchestrator support** — 1 or 2 orchestrators, each with sub-agents.
-6. **Graceful degradation** — if camofox is down, browser test fails fast.
-
 ## Why no PNG chart?
 
-The previous PIL-based chart generator had multiple bugs (dict iteration on
-test rows, mis-counted `total_passed`, hardcoded stale data) and required
-a font path that doesn't exist on Linux CI. PR #1 deleted it. Markdown is
-more reviewable, diffs in Git, and renders in any PR. If you need a chart
-later, run a separate plotting tool against `report.json` — that's a
-deliberate boundary.
+A previous PIL-based chart generator had multiple bugs and required a
+font path that doesn't exist on Linux CI. PR #1 deleted it. Markdown is
+more reviewable, diffs cleanly in Git, and renders in any PR. Pillow is
+no longer a dependency. If a chart is needed, run a separate plotting
+tool against `report.json` — that's a deliberate boundary.
 
-## Bugs Fixed (Historical)
+## Pitfalls and invariants
 
-| Bug | Fix |
-|-----|-----|
-| max_concurrent_children=3 hard-coded | Now auto-detected from config |
-| No restart warning when config changed | Explicit warning + restart commands |
-| 8 agents always hardcoded | Dynamic based on user choice |
-| Orchestrator test was 1x4 only | Now supports 1x4 or 2x4 |
-| web_research always failed | Removed — MiniMax rate-limits any target at 8x concurrency |
-| benchmark_quick.py skeleton | Confirmed as non-executable; agent-orchestrator path is the real solution |
-| compute_pi f-string brace escaping | Use `%%` shell modulo + `.replace("NAME","{name}")` instead of `.format()` |
-| OMEGA goal truncation at ~500 tokens | Use temp-file approach for large inline scripts |
-| PIL chart generator: multiple bugs | **Deleted in PR #1.** Markdown report replaces it entirely. |
-| Pillow font dependency on Linux CI | **Removed.** Reports are plain Markdown, no fonts/images required. |
+**Sub-agent goals must expand names inline** — never pass a literal
+`{name}` placeholder to sub-agents.
 
-## Pitfalls and Invariants
-
-**Sub-agent goals must expand names inline** — never pass a literal `{name}`
-placeholder to sub-agents.
-
-**compute_pi must use `%%` shell modulo** — never `.format()` on f-string
+**`compute_pi` must use `%%` shell modulo** — not `.format()` on f-string
 brace syntax.
 
-**OMEGA goal truncation** — keep sub-agent goal strings under ~500 tokens;
-use temp-file approach for large inline scripts.
+**OMEGA goal truncation** — keep sub-agent goal strings under ~500
+tokens; use a temp-file approach for large inline scripts.
 
-**Wall time accuracy by test type:**
+**Wall-time accuracy by test type:**
 
-- `compute_pi` (5M iterations): wall time is accurate — takes >1s per
-  agent, measurement captures it.
-- `echo_test`, `file_io`: wall time reads as 0.0s because sub-second tasks
-  complete before parent observes them separately — PASS counts are always
-  correct.
+- `compute_pi` (5M iterations): wall time is accurate — workload takes
+  >1s per agent, measurement captures it.
+- `echo_test`, `file_io`: wall time often reads as 0.0s because
+  sub-second tasks complete before the parent observes them separately.
+  Pass counts are always correct; wall time is informational only.
 
-## Key Delegate Architecture (Session 2026-05-09)
-
-- `delegate_task` lives at `run_agent.py:_dispatch_delegate_task` →
-  `tools/delegate_tool.py:delegate_task`.
-- It's a method on the live AIAgent, not importable from subprocess.
-- ACP adapter uses JSON-RPC over stdio — local-trust, designed for
-  interactive clients.
-- ACP stdio reserves stdout for JSON-RPC frames; logging goes to stderr.
-- Subagent approval callback: `tools/terminal_tool.py` uses
-  `threading.local()` — not inherited by ThreadPoolExecutor workers;
-  delegate_tool installs `_subagent_auto_deny` by default.
-- `max_spawn_depth: 1` enforced — orchestrator → sub-agent only, no
-  grandchild spawning.
-
-## Verification
-
-```bash
-# Step 0: auto-detect
-grep max_concurrent_children ~/.hermes/config.yaml
-
-# Step 1: pick count
-# Step 2: pick tests
-# Step 3: pick orchestrator
-
-# If config changed:
-launchctl list | grep hermes  # confirm running
-```
+**No fabricated rows.** The renderer surfaces only what sub-agents
+actually wrote (or an explicit `missing` row). It does not synthesise
+successes, populate placeholder metrics, or backfill from defaults.
