@@ -1,0 +1,117 @@
+"""Tests for hermes_benchmark.report and schema."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from hermes_benchmark.report import (
+    load_results,
+    main,
+    render_markdown,
+    write_report,
+)
+from hermes_benchmark.schema import AgentResult, BenchmarkReport, TestResult
+
+
+def _write(tmp_path: Path, test: str, agent: str, **overrides: object) -> None:
+    base = {
+        "agent": agent,
+        "test": test,
+        "started_at": 1000.0,
+        "completed_at": 1001.5,
+        "wall_s": 1.5,
+        "passed": True,
+        "output": f"{agent}-out",
+        "error": None,
+    }
+    base.update(overrides)
+    test_dir = tmp_path / test
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (test_dir / f"{agent}.json").write_text(json.dumps(base))
+
+
+def test_agent_result_roundtrip() -> None:
+    a = AgentResult(
+        agent="ALPHA", test="t", started_at=0.0, completed_at=1.0,
+        wall_s=1.0, passed=True, output="x",
+    )
+    assert AgentResult.from_dict(a.to_dict()) == a
+
+
+def test_test_result_aggregates() -> None:
+    agents = [
+        AgentResult("A", "t", 0.0, 1.0, 1.0, True),
+        AgentResult("B", "t", 0.5, 2.5, 2.0, True),
+        AgentResult("C", "t", 0.0, 3.0, 3.0, False),
+    ]
+    tr = TestResult(name="t", agents=agents)
+    assert tr.total == 3
+    assert tr.passed == 2
+    # wall_s = max(completed_at) - min(started_at) = 3.0 - 0.0
+    assert tr.wall_s == pytest.approx(3.0)
+    assert tr.throughput == pytest.approx(2 / 3.0)
+
+
+def test_load_results_full_run(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    _write(tmp_path, "echo_test", "BRAVO", passed=False, error="boom")
+    _write(tmp_path, "compute_pi", "ALPHA", wall_s=3.0, completed_at=1003.0)
+
+    report = load_results(tmp_path)
+    assert {t.name for t in report.tests} == {"echo_test", "compute_pi"}
+    assert report.agent_count == 2
+    assert report.grand_total == 3
+    assert report.grand_passed == 2
+
+
+def test_load_results_missing_dir(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_results(tmp_path / "nope")
+
+
+def test_load_results_invalid_json(tmp_path: Path) -> None:
+    test_dir = tmp_path / "bad"
+    test_dir.mkdir()
+    (test_dir / "ALPHA.json").write_text("{not json")
+    with pytest.raises(ValueError):
+        load_results(tmp_path)
+
+
+def test_render_markdown_contains_table(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    _write(tmp_path, "echo_test", "BRAVO", passed=False, error="boom")
+    md = render_markdown(load_results(tmp_path))
+    assert "# Hermes Swarm Benchmark — Report" in md
+    assert "| Test | Pass | Total | Wall (s) | Throughput (pass/s) |" in md
+    assert "ALPHA" in md and "BRAVO" in md
+    assert "boom" in md
+
+
+def test_write_report_creates_files(tmp_path: Path) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    out_md = tmp_path / "out" / "REPORT.md"
+    out_json = tmp_path / "out" / "report.json"
+    report = write_report(tmp_path, out_md, out_json)
+    assert isinstance(report, BenchmarkReport)
+    assert out_md.is_file()
+    parsed = json.loads(out_json.read_text())
+    assert parsed["grand_passed"] == 1
+    assert parsed["tests"][0]["name"] == "echo_test"
+
+
+def test_main_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write(tmp_path, "echo_test", "ALPHA")
+    out_md = tmp_path / "REPORT.md"
+    rc = main(["--results-dir", str(tmp_path), "--out", str(out_md)])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "wrote" in captured.out
+    assert out_md.is_file()
+
+
+def test_main_cli_missing_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["--results-dir", str(tmp_path / "nope"), "--out", str(tmp_path / "x.md")])
+    assert rc == 2

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-swarm-benchmark"
+version = "0.1.0"
+description = "Concurrent agent benchmark suite for Hermes Agent — Markdown reporting, validated CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "hzang12345-ship-it" }]
+keywords = ["hermes", "benchmark", "agents", "swarm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Topic :: Software Development :: Testing :: Benchmark",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+hermes-benchmark = "hermes_benchmark.cli:main"
+hermes-benchmark-report = "hermes_benchmark.report:main"
+
+[project.urls]
+Homepage = "https://github.com/hzang12345-ship-it/hermes-swarm-benchmark"
+Issues = "https://github.com/hzang12345-ship-it/hermes-swarm-benchmark/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+pythonpath = ["src"]
