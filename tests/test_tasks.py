@@ -105,6 +105,28 @@ def test_generated_script_records_failure(tmp_path: Path) -> None:
     assert "7" in data["error"]
 
 
+def test_browser_test_is_not_a_fabricated_pass(tmp_path: Path) -> None:
+    """The browser test is not implemented; it must record passed=false.
+
+    Returning a passing row for a workload that ran nothing would violate the
+    "no fabricated rows" invariant. The shell command exits non-zero so the
+    sub-agent records an honest failure with a clear error message.
+    """
+    goal = goal_for("ALPHA", "browser")
+    body = goal[len("python3 - <<'PYEOF'\n") : -len("PYEOF\n")]
+    body = body.replace("/tmp/bench_results", str(tmp_path))
+    script = tmp_path / "run.py"
+    script.write_text(body)
+    subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=30,
+        check=True,
+    )
+    data = json.loads((tmp_path / "browser" / "ALPHA.json").read_text())
+    assert data["passed"] is False
+    assert data["error"] is not None
+    assert "not implemented" in (data.get("output", "") + (data["error"] or ""))
+
+
 def test_generated_script_atomic_write_no_tmp_left_behind(tmp_path: Path) -> None:
     body = make_goal_body(
         "CHARLIE", "echo_test", "echo done",

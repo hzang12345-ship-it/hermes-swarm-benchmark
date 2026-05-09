@@ -112,7 +112,10 @@ def _shell_for_test(name: str, test: str) -> str:
             f"print('{name}|'+format(p,'.10f')+'|'+format(time.time()-s,'.3f')+'s')\""
         )
     if test == "browser":
-        return "echo 'browser_skipped'"
+        # The browser workload is not implemented. Exit non-zero so the
+        # sub-agent records passed=false with a clear error, rather than
+        # producing a fabricated "passed" row for a workload that ran nothing.
+        return "echo 'browser test not implemented in this build' >&2 && exit 1"
     raise KeyError(f"unknown test: {test!r}")
 
 

@@ -12,15 +12,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SKILL.md` and `src/` into a Hermes skills directory without ever editing
   user config.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md` — public-repo metadata.
-- README sections covering search keywords, install (Python package + Hermes
-  skill), output location, troubleshooting, and an explicit "no fabricated
-  rows" report contract.
+- README sections covering install (Python package + Hermes skill), output
+  location, troubleshooting, and an explicit "no fabricated rows" report
+  contract.
+- README *Why this exists* section explaining the suite's origin: comparing
+  practical concurrency / throughput limits across lower-cost AI
+  subscription tiers under a Hermes-style swarm workload.
+- README *Benchmark logic analysis* section — what the current workloads do
+  and do not measure, plus a roadmap of recommended next tests
+  (token-heavy summarization, tool-call latency, filesystem contention,
+  multi-step planning, rate-limit/backoff, error recovery, long-context,
+  real browser task).
 
 ### Changed
 
-- README and `SKILL.md` rewritten around discovery and installation: what the
-  repo is, how to find it, how to install into Hermes, where output lands,
-  and how to read the report contract.
+- README and `SKILL.md` rewritten for clarity and concision; redundant
+  contract restatements collapsed; SKILL.md now defers to the README for
+  background and roadmap rather than duplicating them.
 - `SKILL.md` version bumped to 6.2.0; `author` corrected to the GitHub owner.
 - Removed `references/` legacy session notes — they contained historical
   benchmark numbers that could be mistaken for current product output, and
@@ -33,10 +41,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed / clarified
 
-- The "no simulated returns" invariant is now stated front-and-centre in
-  both README and `SKILL.md`: the renderer never fabricates pass rows; a
+- The "no simulated returns" invariant is stated front-and-centre in both
+  README and `SKILL.md`: the renderer never fabricates pass rows; a
   `(test, agent)` pair with no JSON renders as
   `passed=false, error="missing result file"`.
+- The `browser` test no longer records `passed=true`. The previous shell
+  command (`echo 'browser_skipped'`) exited 0, which produced a fabricated
+  pass row for a workload that ran nothing — a violation of the
+  no-fabricated-rows invariant. The command now exits non-zero, so the
+  sub-agent records `passed=false` with a "not implemented" error. New
+  test pins this behaviour.
 
 ## [0.1.0] — PR #1, production-readiness
 
